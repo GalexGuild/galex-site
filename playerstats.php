@@ -64,7 +64,7 @@ $ColorParser = new ColorParser();
                     </div>
                 </nav>
             </header>
-<!-- Modal for Security Nav -->
+            <!-- Modal for Security Nav -->
             <div class="modal fade" id="defaultModal" tabindex="-1" role="dialog" aria-labelledby="defaultModal" aria-hidden="true">
                 <div class="modal-dialog" role="document">
                     <div class="modal-content">
@@ -152,9 +152,9 @@ $ColorParser = new ColorParser();
                             <div class="col-lg-12">
                                 <div class="card card-statistics">
                                     <div class="card-header">
-                                       <div class="card-heading">
-                                           <h4 class="card-title">Enter your username</h4>
-                                       </div>
+                                        <div class="card-heading">
+                                            <h4 class="card-title">Enter your username</h4>
+                                        </div>
                                     </div>
                                     <div class="card-body">
                                         <div class="input-group mb-3">
@@ -163,42 +163,28 @@ $ColorParser = new ColorParser();
                                             </form>
                                         </div>
                                         <?php
-                                        if(isset($_GET['ign'])) {
-                                            $ign = $_GET['ign'];
-                                            $file = 'http://api.mojang.com/users/profiles/minecraft/'.$ign;
-                                            $mojang = file_get_contents($file);
-                                            $mojangArray = json_decode($mojang, true);
-                                            $playerUUID = "";
-                                            if($mojang != null) {
-                                                $playerUUID = $mojangArray["id"];
-                                            }
-                                            $player = $HypixelPHP->getPlayer(['uuid' => $playerUUID]);
-                                         ?>
-                                        <?php
-                                        if ($player !== null) { ?>
-                                            <div class="information">
-                                                <h1><?php
-                                                    $rawName = $player->getRawFormattedName();
-                                                    echo $ColorParser->parse($rawName); ?></h1>
-                                            </div>
-                                        <?php }} ?>
+                                        include(ROOT . '/app/views/player.php');
+                                        ?>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
+                        <footer class="footer">
+                            <div class="row">
+                                <div class="col-12 col-sm-6 text-center text-sm-left">
+                                    <p>&copy; Copyright 2019. All rights reserved.</p>
+                                </div>
+                                <div class="col  col-sm-6 ml-sm-auto text-center text-sm-right">
+                                    <p>Made with <i class="fa fa-heart text-danger mx-1"></i> by Jackelele</p>
+                                </div>
+                            </div>
+                        </footer>
                     </div>
                 </div>
+                <!-- end app -->
             </div>
-            <footer class="footer">
-                <div class="row">
-                    <div class="col-12 col-sm-6 text-center text-sm-left">
-                        <p>&copy; Copyright 2019. All rights reserved.</p>
-                    </div>
-                    <div class="col  col-sm-6 ml-sm-auto text-center text-sm-right">
-                        <p>Made with <i class="fa fa-heart text-danger mx-1"></i> by Jackelele</p>
-                    </div>
-                </div>
-            </footer>
         </div>
     </div>
-    <!-- end app -->
 
     <!-- plugins -->
     <script src="assets\js\vendors.js"></script>
