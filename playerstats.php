@@ -1,11 +1,14 @@
 <?php
+define("ROOT", $_SERVER["DOCUMENT_ROOT"]);
 
-include("autoload.php");
+require_once(ROOT . "/autoload.php");
+require_once(ROOT . "/config.php");
 
 use Plancke\HypixelPHP\HypixelPHP;
 use Plancke\HypixelPHP\color\ColorParser;
 use Plancke\HypixelPHP\cache\impl\NoCacheHandler;
-$HypixelPHP = new HypixelPHP("");
+
+$HypixelPHP = new HypixelPHP($apiKey);
 $HypixelPHP->setCacheHandler(new NoCacheHandler($HypixelPHP));
 
 $guild = $HypixelPHP->getGuild(['byName' => 'Galex']);

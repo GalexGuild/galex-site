@@ -1,11 +1,13 @@
 <?php
+define("ROOT", $_SERVER["DOCUMENT_ROOT"]);
 
-include("autoload.php");
+require_once(ROOT . "/autoload.php");
+require_once(ROOT . "/config.php");
 
 use Plancke\HypixelPHP\HypixelPHP;
 use Plancke\HypixelPHP\color\ColorParser;
 use Plancke\HypixelPHP\cache\impl\NoCacheHandler;
-$HypixelPHP = new HypixelPHP("");
+$HypixelPHP = new HypixelPHP($apiKey);
 $HypixelPHP->setCacheHandler(new NoCacheHandler($HypixelPHP));
 
 $guild = $HypixelPHP->getGuild(['byName' => 'Galex']);
@@ -91,7 +93,7 @@ $tagColor = (new ColorParser)::DEFAULT_COLOR_HEX_MAP[$guild->getTagColor()];
                             <li><a href="#" data-toggle="modal" data-target="#defaultModal" aria-expanded="false"><i class="nav-icon fas fa-key"></i><span class="nav-title">Security</span></a></li>
 
                             <li class="nav-static-title">Hypixel</li>
-                            <li class="active"> 
+                            <li class="active">
                                 <a class="has-arrow" href="javascript:void(0)" aria-expanded="true"><i class="nav-icon fas fa-chart-bar"></i> <span class="nav-title">Statistics</span> <span class="nav-label label label-success">New</span> </a>
                                 <ul aria-expanded="true">
                                     <li class="active"> <a href="widget-chart.html">Galex Statistics</a> </li>
