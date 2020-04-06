@@ -1,2 +1,2 @@
 # galex-site
-Galex Panel
+This is the website for Galex Guild Panel
