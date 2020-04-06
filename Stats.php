@@ -14,6 +14,7 @@ $db = Factory::fromArray([
     'password'
 ]);
 
+/* Get the guild info from the api */
 function __api_get_guild($id, $key) {
     $data = [
         "key" => $key,
@@ -26,6 +27,7 @@ function __api_get_guild($id, $key) {
     return json_decode(file_get_contents($url . "?" . $query), true)["guild"];
 }
 
+/* Get player info from api */
 function __api_get_player($uuid, $key) {
     $data = [
         "key" => $key,
@@ -38,18 +40,21 @@ function __api_get_player($uuid, $key) {
     return json_decode(file_get_contents($url . "?" . $query), true)["player"];
 }
 
-function __api_get_members($guild) {
+/* Get members from guild api results */
+function __guild_get_members($guild) {
     return $guild["members"];
 }
 
-/* Expects player data */
-function __api_format_player_response($response, $rank_priorities) {
+/* Format the api response for a player. */
+function __player_format_player_response($response, $rank_priorities) {
+    /* Make sure we see remove Lander and Neverlander */
     if ($response["rank"] === "Lander") {
         $response["rank"] = "Astronaut";
     } else if ($response["rank"] === "Neverlander") {
         $response["rank"] = "Cosmonaut";
     }
 
+    /* Return columns we can save in database */
     return [
         "uuid" => $response["uuid"],
         "username" => $response["displayname"],
@@ -59,6 +64,7 @@ function __api_format_player_response($response, $rank_priorities) {
     ];
 }
 
+/* Initialize rank priorities, higher means more important */
 $rank_priorities = [
     "Astronaut" => 1,
     "Cosmonaut" => 2,
@@ -66,6 +72,8 @@ $rank_priorities = [
     "Guild Master" => PHP_INT_SIZE,
 ];
 
+/* Get cached members from our database, and turn into
+   associative array where keys are UUIDS */
 $cached_members = array_column($db->run('SELECT * FROM members ORDER BY rank_priority'), null, "uuid");
 $cache_times = $db->row('SELECT * FROM cache_times');
 
@@ -81,7 +89,7 @@ if ($time - $cache_times["guild"] > 60 * 60) {
     ]);
 
     $guild = __api_get_guild("59b2e87d0cf2eb322db9437f", $apiKey);
-    $members = __api_get_members($guild);
+    $members = __guild_get_members($guild);
 
     /* Copy all cached members, and remove those who we have seen.
     the ones who are not removed are players who left */
@@ -97,7 +105,7 @@ if ($time - $cache_times["guild"] > 60 * 60) {
         if (!isset($cached_members[$uuid])) {
             $player_response = __api_get_player($uuid, $apiKey);
 
-            $cached_members[$uuid] = __api_format_player_response(
+            $cached_members[$uuid] = __player_format_player_response(
                 array_merge($player_response, $members[$i]),
                 $rank_priorities
             );
