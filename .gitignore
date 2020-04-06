@@ -1,3 +1,4 @@
 /config.php
 /src/*
 /phpd.log
+/cache/*

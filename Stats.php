@@ -4,18 +4,129 @@ define("ROOT", $_SERVER["DOCUMENT_ROOT"]);
 require_once(ROOT . "/autoload.php");
 require_once(ROOT . "/config.php");
 
-use Plancke\HypixelPHP\HypixelPHP;
-use Plancke\HypixelPHP\color\ColorParser;
-use Plancke\HypixelPHP\cache\impl\NoCacheHandler;
-$HypixelPHP = new HypixelPHP($apiKey);
-$HypixelPHP->setCacheHandler(new NoCacheHandler($HypixelPHP));
+use \ParagonIE\EasyDB\EasyStatement;
+use \ParagonIE\EasyDB\Factory;
+use \Plancke\HypixelPHP\color\ColorParser;
 
-$guild = $HypixelPHP->getGuild(['byName' => 'Galex']);
-$memberList = $guild->getMemberList();
-$tagColor = (new ColorParser)::DEFAULT_COLOR_HEX_MAP[$guild->getTagColor()];
+$db = Factory::fromArray([
+    'mysql:host=localhost;dbname=galex_db',
+    'root',
+    'password'
+]);
 
+function __api_get_guild($id, $key) {
+    $data = [
+        "key" => $key,
+        "id" => $id
+    ];
+
+    $url = "https://api.hypixel.net/guild";
+    $query = http_build_query($data);
+
+    return json_decode(file_get_contents($url . "?" . $query), true)["guild"];
+}
+
+function __api_get_player($uuid, $key) {
+    $data = [
+        "key" => $key,
+        "uuid" => $uuid
+    ];
+
+    $url = "https://api.hypixel.net/player";
+    $query = http_build_query($data);
+
+    return json_decode(file_get_contents($url . "?" . $query), true)["player"];
+}
+
+function __api_get_members($guild) {
+    return $guild["members"];
+}
+
+/* Expects player data */
+function __api_format_player_response($response, $rank_priorities) {
+    if ($response["rank"] === "Lander") {
+        $response["rank"] = "Astronaut";
+    } else if ($response["rank"] === "Neverlander") {
+        $response["rank"] = "Cosmonaut";
+    }
+
+    return [
+        "uuid" => $response["uuid"],
+        "username" => $response["displayname"],
+        "joined_at" => intval($response["joined"]),
+        "rank" => $response["rank"],
+        "rank_priority" => $rank_priorities[$response['rank']]
+    ];
+}
+
+$rank_priorities = [
+    "Astronaut" => 1,
+    "Cosmonaut" => 2,
+    "Staff" => 3,
+    "Guild Master" => PHP_INT_SIZE,
+];
+
+$cached_members = array_column($db->run('SELECT * FROM members ORDER BY rank_priority'), null, "uuid");
+$cache_times = $db->row('SELECT * FROM cache_times');
+
+$time = time();
+
+/* Revalidate cache every hour */
+if ($time - $cache_times["guild"] > 60 * 60) {
+    /* Update last time cached */
+    $db->update('cache_times', [
+        'guild' => $time
+    ], [
+        'guild' => $cache_times["guild"]
+    ]);
+
+    $guild = __api_get_guild("59b2e87d0cf2eb322db9437f", $apiKey);
+    $members = __api_get_members($guild);
+
+    /* Copy all cached members, and remove those who we have seen.
+    the ones who are not removed are players who left */
+    $left = $cached_members;
+
+    for ($i = 0; $i < count($members); $i++) {
+        $uuid = $members[$i]["uuid"];
+
+        /* Test player leaving */
+        // if ($uuid === "a19c8b8bc94a45ae9da5563c8ed65a6b") continue;
+
+        /* We haven't seen this player before */
+        if (!isset($cached_members[$uuid])) {
+            $player_response = __api_get_player($uuid, $apiKey);
+
+            $cached_members[$uuid] = __api_format_player_response(
+                array_merge($player_response, $members[$i]),
+                $rank_priorities
+            );
+
+            $db->insert('members', $cached_members[$uuid]);
+        } else {
+            unset($left[$uuid]);
+        }
+    }
+
+    if (count($left) > 0) {
+        $statement = EasyStatement::open()->in('uuid IN (?*)', array_keys($left));
+
+        $db->delete('members', $statement);
+    }
+}
+
+/* Prepare required variables for sorting */
+$priority = [];
+$join_date = [];
+
+foreach ($cached_members as $key => $player) {
+    $priority[$key] = $rank_priorities[$player['rank']];
+    $join_date[$key] = $player['joined_at'];
+}
+
+/* First, sort by rank, then sort by join date */
+array_multisort($priority, SORT_DESC, $join_date, SORT_ASC, $cached_members);
 ?>
-
 <!DOCTYPE html>
 <html lang="en">
 
@@ -150,8 +261,10 @@ $tagColor = (new ColorParser)::DEFAULT_COLOR_HEX_MAP[$guild->getTagColor()];
                             <div class="col-xs-6 col-xxl-3 m-b-30">
                                 <div class="card card-statistics h-100 m-b-0 bg-pink">
                                     <div class="card-body">
-                                        <h2 class="text-white mb-0"><?php echo $guild->getMemberCount(); ?></h2>
-                                        <p class="text-white">Total Guild Members</p>
+                                        <h2 class="text-white mb-0">
+                                            <?php echo count($cached_members); ?>
+                                        </h2>
+                                        <p class="text-white">Guild Members</p>
                                     </div>
                                 </div>
                             </div>
@@ -164,18 +277,17 @@ $tagColor = (new ColorParser)::DEFAULT_COLOR_HEX_MAP[$guild->getTagColor()];
                                 <div class="card card-statistics h-100 m-b-0 bg-primary">
                                     <div class="card-body">
                                         <h2 class="text-white mb-0"><?php echo $discmembersCount ?></h2>
-                                        <p class="text-white">Discord Members</p>
+                                        <p class="text-white">Online Discord Members</p>
                                     </div>
                                 </div>
                             </div>
                             <?php
                             function getOnlinePlayers($ip, $port = 25565) {
-                                $ch = curl_init('https://mcapi.us/server/status?ip=mc.hypixel.net');
-                                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-                                $results = curl_exec($ch);
-                                curl_close($ch);
-                                $json = json_decode($results, true);
+                                $url = 'https://mcapi.us/server/status?ip=mc.hypixel.net';
+                                $json = json_decode(file_get_contents($url), true);
+
                                 $mconlineplayers = $json['players']['now'];
+
                                 return $mconlineplayers;
                             }
                             ?>
@@ -188,26 +300,34 @@ $tagColor = (new ColorParser)::DEFAULT_COLOR_HEX_MAP[$guild->getTagColor()];
                                 </div>
                             </div>
                             <?php
-                            $frequencies = [
-                                    "Lander" => 0,
-                                "Cosmonaut"=>0,
-                                "Staff"=>0,
-                                "Guild Master" => 0,
-                                "Neverlander" =>0,
-                                "Astronaut"=>0,
-                            ];
-
-                            foreach($guild->getMemberList()->getList() as $ranks) {
-                                foreach ($ranks as $member) {
-                                    $frequencies[$member->get("rank")]++;
-                                }
-                            }
+                            // $frequencies = [
+                            //         "Lander" => 0,
+                            //     "Cosmonaut"=>0,
+                            //     "Staff"=>0,
+                            //     "Guild Master" => 0,
+                            //     "Neverlander" =>0,
+                            //     "Astronaut"=>0,
+                            // ];
+                            //
+                            // foreach($guild->getMemberList()->getList() as $ranks) {
+                            //     foreach ($ranks as $member) {
+                            //         $frequencies[$member->get("rank")]++;
+                            //     }
+                            // }
                             ?>
                             <div class="col-xs-6 col-xxl-3 m-b-30">
                                 <div class="card card-statistics h-100 m-b-0 bg-info">
                                     <div class="card-body">
-                                        <h2 class="text-white mb-0"><?php echo $frequencies["Staff"] + $frequencies["Guild Master"]; ?></h2>
-                                        <p class="text-white">Current Guild Staff</p>
+                                        <h2 class="text-white mb-0">
+                                            <?php
+                                            $staff = array_filter($cached_members, function($var) {
+                                                return $var["rank"] === "Staff";
+                                            });
+
+                                            echo count($staff) + 1;
+                                            ?>
+                                        </h2>
+                                        <p class="text-white">Guild Staff Members</p>
                                     </div>
                                 </div>
                             </div>
@@ -224,27 +344,17 @@ $tagColor = (new ColorParser)::DEFAULT_COLOR_HEX_MAP[$guild->getTagColor()];
                                                         <th>Username</th>
                                                         <th>Guild Rank</th>
                                                         <th>Join Date</th>
-                                                        <th>Last Login</th>
                                                     </tr>
                                                 </thead>
                                                 <tbody>
-                                                <?php
-                                                foreach($memberList->getList() as $rank => $members) {
-                                                    foreach ($members as $member) {
-                                                        $player = $member->getPlayer();
-
-                                                        if($player === null) continue;
-
-                                                        echo '<tr>';
-                                                        echo '<td><img class="member-list" src="https://cravatar.eu/helmavatar/' . $player->getName() . '/32" /></td>';
-                                                        echo '<td><b>' . $player->getName() . '</b></td>';
-                                                        echo '<td>' . ucfirst($rank) . '</td>';
-                                                        echo '<td>' . date('Y/m/d H:i:s', $member->getJoinTimeStamp() / 1000) . '</td>';
-                                                        echo '<td>' . date('Y/m/d H:i:s', $player->get('lastLogin') / 1000) . '</td>';
-                                                        echo '</tr>';
-                                                    }
-                                                }
-                                                ?>
+                                                    <?php foreach ($cached_members as $value): ?>
+                                                        <tr>
+                                                        <td><img class="member-list" src="https://crafatar.com/avatars/<?php echo $value["uuid"]; ?>?size=32" /></td>
+                                                        <td><b><?php echo $value["username"]; ?></b></td>
+                                                        <td><?php echo ucfirst($value["rank"]); ?></td>
+                                                        <td><?php echo date('Y/m/d H:i:s', $value["joined_at"] / 1000); ?></td>
+                                                        </tr>
+                                                    <?php endforeach; ?>
                                                 </tbody>
                                                 <tfoot>
                                                     <tr>
@@ -252,7 +362,6 @@ $tagColor = (new ColorParser)::DEFAULT_COLOR_HEX_MAP[$guild->getTagColor()];
                                                         <th>Username</th>
                                                         <th>Guild Rank</th>
                                                         <th>Join Date</th>
-                                                        <th>Last Login</th>
                                                     </tr>
                                                 </tfoot>
                                             </table>
@@ -267,7 +376,7 @@ $tagColor = (new ColorParser)::DEFAULT_COLOR_HEX_MAP[$guild->getTagColor()];
             <footer class="footer">
                 <div class="row">
                     <div class="col-12 col-sm-6 text-center text-sm-left">
-                        <p>&copy; Copyright 2019. All rights reserved.</p>
+                        <p>&copy; Copyright 2020. All rights reserved.</p>
                     </div>
                     <div class="col  col-sm-6 ml-sm-auto text-center text-sm-right">
                         <p>Made with <i class="fa fa-heart text-danger mx-1"></i> by Jackelele</p>
