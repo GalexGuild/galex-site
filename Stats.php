@@ -3,6 +3,8 @@ define("ROOT", $_SERVER["DOCUMENT_ROOT"]);
 
 require_once(ROOT . "/autoload.php");
 require_once(ROOT . "/config.php");
+require_once(ROOT . "/constants.php");
+require_once(ROOT . "/js_rank_rewrite.php");
 
 use \Plancke\HypixelPHP\color\ColorParser;
 use \ParagonIE\EasyDB\EasyStatement;
@@ -23,7 +25,7 @@ function __api_get_guild($id, $key) {
     $url = "https://api.hypixel.net/guild";
     $query = http_build_query($data);
 
-    return json_decode(file_get_contents($url . "?" . $query), true)["guild"];
+    return json_decode(@file_get_contents($url . "?" . $query), true)["guild"];
 }
 
 function __api_get_player($uuid, $key) {
@@ -35,7 +37,7 @@ function __api_get_player($uuid, $key) {
     $url = "https://api.hypixel.net/player";
     $query = http_build_query($data);
 
-    return json_decode(file_get_contents($url . "?" . $query), true)["player"];
+    return json_decode(@file_get_contents($url . "?" . $query), true)["player"];
 }
 
 function __api_get_members($guild) {
@@ -43,7 +45,7 @@ function __api_get_members($guild) {
 }
 
 /* Expects player data */
-function format_player($response) {
+function format_player($player, $guild) {
     $ranks = [
         "Astronaut" => 1,
         "Cosmonaut" => 2,
@@ -51,18 +53,25 @@ function format_player($response) {
         "Guild Master" => PHP_INT_SIZE,
     ];
 
-    if ($response["rank"] === "Lander") {
-        $response["rank"] = "Astronaut";
-    } else if ($response["rank"] === "Neverlander") {
-        $response["rank"] = "Cosmonaut";
+    if ($guild["rank"] === "Lander") {
+        $guild["rank"] = "Astronaut";
+    } else if ($guild["rank"] === "Neverlander") {
+        $guild["rank"] = "Cosmonaut";
     }
 
     return [
-        "uuid" => $response["uuid"],
-        "username" => $response["displayname"],
-        "joined_at" => intval($response["joined"]),
-        "rank" => $response["rank"],
-        "rank_priority" => $ranks[$response["rank"]]
+        "uuid" => $player["uuid"],
+        "username" => $player["displayname"],
+        "joined_at" => intval($guild["joined"]),
+        "guild_rank" => $guild["rank"],
+        "rank_priority" => $ranks[$guild["rank"]],
+        "package_rank" => $player["packageRank"] ?? null,
+        "new_package_rank" => $player["newPackageRank"] ?? null,
+        "monthly_package_rank" => $player["monthlyPackageRank"] ?? null,
+        "rank_plus_color" => $player["rankPlusColor"] ?? null,
+        "monthly_rank_color" => $player["monthlyRankColor"] ?? null,
+        "rank" => $player["rank"] ?? null,
+        "prefix" => $player["prefix"] ?? null
     ];
 }
 
@@ -71,20 +80,17 @@ function invalidate_cache($cached, $online, $db, $key) {
     /* Initialize counters */
     $i = count($cached) - 1; $j = count($online) - 1;
 
-    $fill = $i < 0;
-
-    /* Reversed loop to be able to update */
-    while (($i >= 0 || $fill) && $j >= 0) {
-        if (!$fill && ($cached[$i]["uuid"] > $online[$j]["uuid"])) {
+    do {
+        if ($cached[$i]["uuid"] > $online[$j]["uuid"]) {
             $db->delete('members', [
                 'uuid' => $cached[$i]['uuid']
             ]);
 
             array_splice($cached, $i--, 1);
-        } else if ($fill || ($cached[$i]["uuid"] < $online[$j]["uuid"])) {
-            $response = __api_get_player($online[$j]["uuid"], $key);
-            $response = array_merge($response, $online[$j--]);
-            $formatted = format_player($response);
+        } else if ($cached[$i]["uuid"] < $online[$j]["uuid"]) {
+            $player = __api_get_player($online[$j]["uuid"], $key);
+
+            $formatted = format_player($player, $online[$j--]);
 
             $db->insert('members', $formatted);
 
@@ -92,7 +98,13 @@ function invalidate_cache($cached, $online, $db, $key) {
         } else {
             --$i; --$j;
         }
-    }
+
+        if ($i < 0 && $j < 0) break;
+
+        if ($i < 0) $i = 0;
+        if ($j < 0) $j = 0;
+
+    } while ($i >= 0 && $j >= 0);
 
     return $cached;
 }
@@ -142,6 +154,17 @@ usort($cached, function($a, $b) {
     <link rel="stylesheet" type="text/css" href="assets\style.css">
     <!-- Plugins -->
     <script src="https://kit.fontawesome.com/56d4802990.js" crossorigin="anonymous"></script>
+    <style media="screen">
+        @font-face {
+            font-family: minecraftia;
+            src: url("/Minecraftia.ttf");
+        }
+
+        .name-wrapper {
+            font-family: 'Minecraftia', serif;
+            font-size: 0;
+        }
+    </style>
 </head>
 
 <body>
@@ -347,11 +370,25 @@ usort($cached, function($a, $b) {
                                                 </thead>
                                                 <tbody>
                                                     <?php for ($i = 0; $i < count($cached); $i++): ?>
+                                                        <?php
+                                                        $player = $cached[$i];
+                                                        $tag_colors = calcTag($player, $ranks, $colors);
+                                                        ?>
                                                         <tr>
-                                                        <td><img class="member-list" src="https://crafatar.com/avatars/<?php echo $cached[$i]["uuid"]; ?>?size=32&overlay=1" /></td>
-                                                        <td><b><?php echo $cached[$i]["username"]; ?></b></td>
-                                                        <td><?php echo ucfirst($cached[$i]["rank"]); ?></td>
-                                                        <td><?php echo date('Y/m/d H:i:s', $cached[$i]["joined_at"] / 1000); ?></td>
+                                                        <td><img class="member-list" src="https://crafatar.com/avatars/<?php echo $player["uuid"]; ?>?size=32&overlay=1" /></td>
+                                                        <td class="name-wrapper">
+                                                            <?php for ($j = 0; $j < count($tag_colors); $j++): ?>
+                                                                <span style='font-size: 1rem; color: <?php echo $color_map[$tag_colors[$j][0]]; ?>'><?php echo $tag_colors[$j][1]; ?></span>
+
+                                                                <?php if ($j === count($tag_colors) - 1): ?>
+                                                                    <span style='font-size: 1rem; padding-left: 5px; color: <?php echo $color_map[$tag_colors[$j][0]]; ?>'>
+                                                                        <?php echo $player["username"]; ?>
+                                                                    </span>
+                                                                <?php endif; ?>
+                                                            <?php endfor; ?>
+                                                        </td>
+                                                        <td><?php echo ucfirst($player["guild_rank"]); ?></td>
+                                                        <td><?php echo date('Y/m/d H:i:s', $player["joined_at"] / 1000); ?></td>
                                                         </tr>
                                                     <?php endfor; ?>
                                                 </tbody>
