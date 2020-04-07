@@ -3,19 +3,141 @@ define("ROOT", $_SERVER["DOCUMENT_ROOT"]);
 
 require_once(ROOT . "/autoload.php");
 require_once(ROOT . "/config.php");
+require_once(ROOT . "/constants.php");
+require_once(ROOT . "/js_rank_rewrite.php");
 
-use Plancke\HypixelPHP\HypixelPHP;
-use Plancke\HypixelPHP\color\ColorParser;
-use Plancke\HypixelPHP\cache\impl\NoCacheHandler;
-$HypixelPHP = new HypixelPHP($apiKey);
-$HypixelPHP->setCacheHandler(new NoCacheHandler($HypixelPHP));
+use \Plancke\HypixelPHP\color\ColorParser;
+use \ParagonIE\EasyDB\EasyStatement;
+use \ParagonIE\EasyDB\Factory;
 
-$guild = $HypixelPHP->getGuild(['byName' => 'Galex']);
-$memberList = $guild->getMemberList();
-$tagColor = (new ColorParser)::DEFAULT_COLOR_HEX_MAP[$guild->getTagColor()];
+$db = Factory::fromArray([
+    "mysql:host=localhost;dbname=galex_db",
+    "root",
+    "password"
+]);
 
+function __api_get_guild($id, $key) {
+    $data = [
+        "key" => $key,
+        "id" => $id
+    ];
+
+    $url = "https://api.hypixel.net/guild";
+    $query = http_build_query($data);
+
+    return json_decode(@file_get_contents($url . "?" . $query), true)["guild"];
+}
+
+function __api_get_player($uuid, $key) {
+    $data = [
+        "key" => $key,
+        "uuid" => $uuid
+    ];
+
+    $url = "https://api.hypixel.net/player";
+    $query = http_build_query($data);
+
+    return json_decode(@file_get_contents($url . "?" . $query), true)["player"];
+}
+
+function __api_get_members($guild) {
+    return $guild["members"];
+}
+
+/* Expects player data */
+function format_player($player, $guild) {
+    $ranks = [
+        "Astronaut" => 1,
+        "Cosmonaut" => 2,
+        "Staff" => 3,
+        "Guild Master" => PHP_INT_SIZE,
+    ];
+
+    if ($guild["rank"] === "Lander") {
+        $guild["rank"] = "Astronaut";
+    } else if ($guild["rank"] === "Neverlander") {
+        $guild["rank"] = "Cosmonaut";
+    }
+
+    return [
+        "uuid" => $player["uuid"],
+        "username" => $player["displayname"],
+        "joined_at" => intval($guild["joined"]),
+        "guild_rank" => $guild["rank"],
+        "rank_priority" => $ranks[$guild["rank"]],
+        "package_rank" => $player["packageRank"] ?? null,
+        "new_package_rank" => $player["newPackageRank"] ?? null,
+        "monthly_package_rank" => $player["monthlyPackageRank"] ?? null,
+        "rank_plus_color" => $player["rankPlusColor"] ?? null,
+        "monthly_rank_color" => $player["monthlyRankColor"] ?? null,
+        "rank" => $player["rank"] ?? null,
+        "prefix" => $player["prefix"] ?? null
+    ];
+}
+
+/* Fix cache */
+function invalidate_cache($cached, $online, $db, $key) {
+    /* Initialize counters */
+    $i = count($cached) - 1; $j = count($online) - 1;
+
+    do {
+        if ($cached[$i]["uuid"] > $online[$j]["uuid"]) {
+            $db->delete('members', [
+                'uuid' => $cached[$i]['uuid']
+            ]);
+
+            array_splice($cached, $i--, 1);
+        } else if ($cached[$i]["uuid"] < $online[$j]["uuid"]) {
+            $player = __api_get_player($online[$j]["uuid"], $key);
+
+            $formatted = format_player($player, $online[$j--]);
+
+            $db->insert('members', $formatted);
+
+            array_push($cached, $formatted);
+        } else {
+            --$i; --$j;
+        }
+
+        if ($i < 0 && $j < 0) break;
+
+        if ($i < 0) $i = 0;
+        if ($j < 0) $j = 0;
+
+    } while ($i >= 0 && $j >= 0);
+
+    return $cached;
+}
+
+$cached = $db->run("SELECT * FROM members ORDER BY joined_at");
+$cache_times = $db->row('SELECT * FROM cache_times');
+
+$time = time();
+
+/* Invalidate after 60 minutes */
+if ($time - $cache_times["guild"] > 60 * 60) {
+    /* Update last time cached */
+    $db->update('cache_times', [
+        'guild' => $time
+    ], [
+        'guild' => $cache_times["guild"]
+    ]);
+
+    $guild = __api_get_guild("59b2e87d0cf2eb322db9437f", $apiKey);
+    $online = __api_get_members($guild);
+
+    $cached = invalidate_cache($cached, $online, $db, $apiKey);
+}
+
+/* Sort by rank importance and then by join date */
+usort($cached, function($a, $b) {
+    if ($a["rank_priority"] === $b["rank_priority"]) {
+        return $a["joined_at"] - $b["joined_at"];
+    }
+
+    return $b["rank_priority"] - $a["rank_priority"];
+});
 ?>
-
 <!DOCTYPE html>
 <html lang="en">
 
@@ -32,6 +154,17 @@ $tagColor = (new ColorParser)::DEFAULT_COLOR_HEX_MAP[$guild->getTagColor()];
     <link rel="stylesheet" type="text/css" href="assets\style.css">
     <!-- Plugins -->
     <script src="https://kit.fontawesome.com/56d4802990.js" crossorigin="anonymous"></script>
+    <style media="screen">
+        @font-face {
+            font-family: minecraftia;
+            src: url("/Minecraftia.ttf");
+        }
+
+        .name-wrapper {
+            font-family: 'Minecraftia', serif;
+            font-size: 0;
+        }
+    </style>
 </head>
 
 <body>
@@ -150,8 +283,10 @@ $tagColor = (new ColorParser)::DEFAULT_COLOR_HEX_MAP[$guild->getTagColor()];
                             <div class="col-xs-6 col-xxl-3 m-b-30">
                                 <div class="card card-statistics h-100 m-b-0 bg-pink">
                                     <div class="card-body">
-                                        <h2 class="text-white mb-0"><?php echo $guild->getMemberCount(); ?></h2>
-                                        <p class="text-white">Total Guild Members</p>
+                                        <h2 class="text-white mb-0">
+                                            <?php echo count($cached); ?>
+                                        </h2>
+                                        <p class="text-white">Guild Members</p>
                                     </div>
                                 </div>
                             </div>
@@ -164,50 +299,57 @@ $tagColor = (new ColorParser)::DEFAULT_COLOR_HEX_MAP[$guild->getTagColor()];
                                 <div class="card card-statistics h-100 m-b-0 bg-primary">
                                     <div class="card-body">
                                         <h2 class="text-white mb-0"><?php echo $discmembersCount ?></h2>
-                                        <p class="text-white">Discord Members</p>
+                                        <p class="text-white">Online Discord Members</p>
                                     </div>
                                 </div>
                             </div>
                             <?php
-                            function getOnlinePlayers($ip, $port = 25565) {
-                                $ch = curl_init('https://mcapi.us/server/status?ip=mc.hypixel.net');
-                                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-                                $results = curl_exec($ch);
-                                curl_close($ch);
-                                $json = json_decode($results, true);
-                                $mconlineplayers = $json['players']['now'];
+                            function getOnlinePlayers($ip, $key, $port = 25565) {
+                                $url = "https://api.hypixel.net/playerCount?key={$key}";
+                                $json = json_decode(file_get_contents($url), true);
+
+                                $mconlineplayers = $json["playerCount"];
+
                                 return $mconlineplayers;
                             }
                             ?>
                             <div class="col-xs-6 col-xxl-3 m-b-30">
                                 <div class="card card-statistics h-100 m-b-0 bg-orange">
                                     <div class="card-body">
-                                        <h2 class="text-white mb-0"><?php echo getOnlinePlayers('play.hypixel.net'); ?></h2>
+                                        <h2 class="text-white mb-0"><?php echo getOnlinePlayers('play.hypixel.net', $apiKey); ?></h2>
                                         <p class="text-white">Hypixel Members</p>
                                     </div>
                                 </div>
                             </div>
                             <?php
-                            $frequencies = [
-                                    "Lander" => 0,
-                                "Cosmonaut"=>0,
-                                "Staff"=>0,
-                                "Guild Master" => 0,
-                                "Neverlander" =>0,
-                                "Astronaut"=>0,
-                            ];
-
-                            foreach($guild->getMemberList()->getList() as $ranks) {
-                                foreach ($ranks as $member) {
-                                    $frequencies[$member->get("rank")]++;
-                                }
-                            }
+                            // $frequencies = [
+                            //         "Lander" => 0,
+                            //     "Cosmonaut"=>0,
+                            //     "Staff"=>0,
+                            //     "Guild Master" => 0,
+                            //     "Neverlander" =>0,
+                            //     "Astronaut"=>0,
+                            // ];
+                            //
+                            // foreach($guild->getMemberList()->getList() as $ranks) {
+                            //     foreach ($ranks as $member) {
+                            //         $frequencies[$member->get("rank")]++;
+                            //     }
+                            // }
                             ?>
                             <div class="col-xs-6 col-xxl-3 m-b-30">
                                 <div class="card card-statistics h-100 m-b-0 bg-info">
                                     <div class="card-body">
-                                        <h2 class="text-white mb-0"><?php echo $frequencies["Staff"] + $frequencies["Guild Master"]; ?></h2>
-                                        <p class="text-white">Current Guild Staff</p>
+                                        <h2 class="text-white mb-0">
+                                            <?php
+                                            $staff = array_filter($cached, function($member) {
+                                                return $member["rank_priority"] >= 3;
+                                            });
+
+                                            echo count($staff);
+                                            ?>
+                                        </h2>
+                                        <p class="text-white">Guild Staff Members</p>
                                     </div>
                                 </div>
                             </div>
@@ -224,27 +366,31 @@ $tagColor = (new ColorParser)::DEFAULT_COLOR_HEX_MAP[$guild->getTagColor()];
                                                         <th>Username</th>
                                                         <th>Guild Rank</th>
                                                         <th>Join Date</th>
-                                                        <th>Last Login</th>
                                                     </tr>
                                                 </thead>
                                                 <tbody>
-                                                <?php
-                                                foreach($memberList->getList() as $rank => $members) {
-                                                    foreach ($members as $member) {
-                                                        $player = $member->getPlayer();
+                                                    <?php for ($i = 0; $i < count($cached); $i++): ?>
+                                                        <?php
+                                                        $player = $cached[$i];
+                                                        $tag_colors = calcTag($player, $ranks, $colors);
+                                                        ?>
+                                                        <tr>
+                                                        <td><img class="member-list" src="https://crafatar.com/avatars/<?php echo $player["uuid"]; ?>?size=32&overlay=1" /></td>
+                                                        <td class="name-wrapper">
+                                                            <?php for ($j = 0; $j < count($tag_colors); $j++): ?>
+                                                                <span style='font-size: 1rem; color: <?php echo $color_map[$tag_colors[$j][0]]; ?>'><?php echo $tag_colors[$j][1]; ?></span>
 
-                                                        if($player === null) continue;
-
-                                                        echo '<tr>';
-                                                        echo '<td><img class="member-list" src="https://cravatar.eu/helmavatar/' . $player->getName() . '/32" /></td>';
-                                                        echo '<td><b>' . $player->getName() . '</b></td>';
-                                                        echo '<td>' . ucfirst($rank) . '</td>';
-                                                        echo '<td>' . date('Y/m/d H:i:s', $member->getJoinTimeStamp() / 1000) . '</td>';
-                                                        echo '<td>' . date('Y/m/d H:i:s', $player->get('lastLogin') / 1000) . '</td>';
-                                                        echo '</tr>';
-                                                    }
-                                                }
-                                                ?>
+                                                                <?php if ($j === count($tag_colors) - 1): ?>
+                                                                    <span style='font-size: 1rem; padding-left: 5px; color: <?php echo $color_map[$tag_colors[$j][0]]; ?>'>
+                                                                        <?php echo $player["username"]; ?>
+                                                                    </span>
+                                                                <?php endif; ?>
+                                                            <?php endfor; ?>
+                                                        </td>
+                                                        <td><?php echo ucfirst($player["guild_rank"]); ?></td>
+                                                        <td><?php echo date('Y/m/d H:i:s', $player["joined_at"] / 1000); ?></td>
+                                                        </tr>
+                                                    <?php endfor; ?>
                                                 </tbody>
                                                 <tfoot>
                                                     <tr>
@@ -252,7 +398,6 @@ $tagColor = (new ColorParser)::DEFAULT_COLOR_HEX_MAP[$guild->getTagColor()];
                                                         <th>Username</th>
                                                         <th>Guild Rank</th>
                                                         <th>Join Date</th>
-                                                        <th>Last Login</th>
                                                     </tr>
                                                 </tfoot>
                                             </table>
@@ -267,7 +412,7 @@ $tagColor = (new ColorParser)::DEFAULT_COLOR_HEX_MAP[$guild->getTagColor()];
             <footer class="footer">
                 <div class="row">
                     <div class="col-12 col-sm-6 text-center text-sm-left">
-                        <p>&copy; Copyright 2019. All rights reserved.</p>
+                        <p>&copy; Copyright 2020. All rights reserved.</p>
                     </div>
                     <div class="col  col-sm-6 ml-sm-auto text-center text-sm-right">
                         <p>Made with <i class="fa fa-heart text-danger mx-1"></i> by Jackelele</p>

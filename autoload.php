@@ -1,11 +1,19 @@
 <?php
-spl_autoload_register(function($classname) {
-    $fns = str_replace('Plancke\\HypixelPHP\\', '/src/', $classname);
-    $fns = str_replace("\\", "/", $fns);
+spl_autoload_register(function ($classname) {
+    /* Directories we have to look in for our classes */
+    $dirs = [
+        ROOT . '/plugins/',
+        ROOT . '/'
+    ];
 
-    $filename = __DIR__ . $fns . '.php';
+    foreach ($dirs as $dir) {
+        $filename = $dir . str_replace('\\', '/', $classname) .'.php';
 
-    require($filename);
+        if (file_exists($filename)) {
+            require($filename);
+
+            break;
+        }
+    }
 });
-
 ?>
