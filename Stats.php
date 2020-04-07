@@ -4,17 +4,16 @@ define("ROOT", $_SERVER["DOCUMENT_ROOT"]);
 require_once(ROOT . "/autoload.php");
 require_once(ROOT . "/config.php");
 
+use \Plancke\HypixelPHP\color\ColorParser;
 use \ParagonIE\EasyDB\EasyStatement;
 use \ParagonIE\EasyDB\Factory;
-use \Plancke\HypixelPHP\color\ColorParser;
 
 $db = Factory::fromArray([
-    'mysql:host=localhost;dbname=galex_db',
-    'root',
-    'password'
+    "mysql:host=localhost;dbname=galex_db",
+    "root",
+    "password"
 ]);
 
-/* Get the guild info from the api */
 function __api_get_guild($id, $key) {
     $data = [
         "key" => $key,
@@ -27,7 +26,6 @@ function __api_get_guild($id, $key) {
     return json_decode(file_get_contents($url . "?" . $query), true)["guild"];
 }
 
-/* Get player info from api */
 function __api_get_player($uuid, $key) {
     $data = [
         "key" => $key,
@@ -40,46 +38,71 @@ function __api_get_player($uuid, $key) {
     return json_decode(file_get_contents($url . "?" . $query), true)["player"];
 }
 
-/* Get members from guild api results */
-function __guild_get_members($guild) {
+function __api_get_members($guild) {
     return $guild["members"];
 }
 
-/* Format the api response for a player. */
-function __player_format_player_response($response, $rank_priorities) {
-    /* Make sure we see remove Lander and Neverlander */
+/* Expects player data */
+function format_player($response) {
+    $ranks = [
+        "Astronaut" => 1,
+        "Cosmonaut" => 2,
+        "Staff" => 3,
+        "Guild Master" => PHP_INT_SIZE,
+    ];
+
     if ($response["rank"] === "Lander") {
         $response["rank"] = "Astronaut";
     } else if ($response["rank"] === "Neverlander") {
         $response["rank"] = "Cosmonaut";
     }
 
-    /* Return columns we can save in database */
     return [
         "uuid" => $response["uuid"],
         "username" => $response["displayname"],
         "joined_at" => intval($response["joined"]),
         "rank" => $response["rank"],
-        "rank_priority" => $rank_priorities[$response['rank']]
+        "rank_priority" => $ranks[$response["rank"]]
     ];
 }
 
-/* Initialize rank priorities, higher means more important */
-$rank_priorities = [
-    "Astronaut" => 1,
-    "Cosmonaut" => 2,
-    "Staff" => 3,
-    "Guild Master" => PHP_INT_SIZE,
-];
+/* Fix cache */
+function invalidate_cache($cached, $online, $db, $key) {
+    /* Initialize counters */
+    $i = count($cached) - 1; $j = count($online) - 1;
 
-/* Get cached members from our database, and turn into
-   associative array where keys are UUIDS */
-$cached_members = array_column($db->run('SELECT * FROM members ORDER BY rank_priority'), null, "uuid");
+    $fill = $i < 0;
+
+    /* Reversed loop to be able to update */
+    while (($i >= 0 || $fill) && $j >= 0) {
+        if (!$fill && ($cached[$i]["uuid"] > $online[$j]["uuid"])) {
+            $db->delete('members', [
+                'uuid' => $cached[$i]['uuid']
+            ]);
+
+            array_splice($cached, $i--, 1);
+        } else if ($fill || ($cached[$i]["uuid"] < $online[$j]["uuid"])) {
+            $response = __api_get_player($online[$j]["uuid"], $key);
+            $response = array_merge($response, $online[$j--]);
+            $formatted = format_player($response);
+
+            $db->insert('members', $formatted);
+
+            array_push($cached, $formatted);
+        } else {
+            --$i; --$j;
+        }
+    }
+
+    return $cached;
+}
+
+$cached = $db->run("SELECT * FROM members ORDER BY joined_at");
 $cache_times = $db->row('SELECT * FROM cache_times');
 
 $time = time();
 
-/* Revalidate cache every hour */
+/* Invalidate after 60 minutes */
 if ($time - $cache_times["guild"] > 60 * 60) {
     /* Update last time cached */
     $db->update('cache_times', [
@@ -89,51 +112,19 @@ if ($time - $cache_times["guild"] > 60 * 60) {
     ]);
 
     $guild = __api_get_guild("59b2e87d0cf2eb322db9437f", $apiKey);
-    $members = __guild_get_members($guild);
+    $online = __api_get_members($guild);
 
-    /* Copy all cached members, and remove those who we have seen.
-    the ones who are not removed are players who left */
-    $left = $cached_members;
-
-    for ($i = 0; $i < count($members); $i++) {
-        $uuid = $members[$i]["uuid"];
-
-        /* Test player leaving */
-        // if ($uuid === "a19c8b8bc94a45ae9da5563c8ed65a6b") continue;
-
-        /* We haven't seen this player before */
-        if (!isset($cached_members[$uuid])) {
-            $player_response = __api_get_player($uuid, $apiKey);
-
-            $cached_members[$uuid] = __player_format_player_response(
-                array_merge($player_response, $members[$i]),
-                $rank_priorities
-            );
-
-            $db->insert('members', $cached_members[$uuid]);
-        } else {
-            unset($left[$uuid]);
-        }
-    }
-
-    if (count($left) > 0) {
-        $statement = EasyStatement::open()->in('uuid IN (?*)', array_keys($left));
-
-        $db->delete('members', $statement);
-    }
+    $cached = invalidate_cache($cached, $online, $db, $apiKey);
 }
 
-/* Prepare required variables for sorting */
-$priority = [];
-$join_date = [];
+/* Sort by rank importance and then by join date */
+usort($cached, function($a, $b) {
+    if ($a["rank_priority"] === $b["rank_priority"]) {
+        return $a["joined_at"] - $b["joined_at"];
+    }
 
-foreach ($cached_members as $key => $player) {
-    $priority[$key] = $rank_priorities[$player['rank']];
-    $join_date[$key] = $player['joined_at'];
-}
-
-/* First, sort by rank, then sort by join date */
-array_multisort($priority, SORT_DESC, $join_date, SORT_ASC, $cached_members);
+    return $b["rank_priority"] - $a["rank_priority"];
+});
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -270,7 +261,7 @@ array_multisort($priority, SORT_DESC, $join_date, SORT_ASC, $cached_members);
                                 <div class="card card-statistics h-100 m-b-0 bg-pink">
                                     <div class="card-body">
                                         <h2 class="text-white mb-0">
-                                            <?php echo count($cached_members); ?>
+                                            <?php echo count($cached); ?>
                                         </h2>
                                         <p class="text-white">Guild Members</p>
                                     </div>
@@ -290,11 +281,11 @@ array_multisort($priority, SORT_DESC, $join_date, SORT_ASC, $cached_members);
                                 </div>
                             </div>
                             <?php
-                            function getOnlinePlayers($ip, $port = 25565) {
-                                $url = 'https://mcapi.us/server/status?ip=mc.hypixel.net';
+                            function getOnlinePlayers($ip, $key, $port = 25565) {
+                                $url = "https://api.hypixel.net/playerCount?key={$key}";
                                 $json = json_decode(file_get_contents($url), true);
 
-                                $mconlineplayers = $json['players']['now'];
+                                $mconlineplayers = $json["playerCount"];
 
                                 return $mconlineplayers;
                             }
@@ -302,7 +293,7 @@ array_multisort($priority, SORT_DESC, $join_date, SORT_ASC, $cached_members);
                             <div class="col-xs-6 col-xxl-3 m-b-30">
                                 <div class="card card-statistics h-100 m-b-0 bg-orange">
                                     <div class="card-body">
-                                        <h2 class="text-white mb-0"><?php echo getOnlinePlayers('play.hypixel.net'); ?></h2>
+                                        <h2 class="text-white mb-0"><?php echo getOnlinePlayers('play.hypixel.net', $apiKey); ?></h2>
                                         <p class="text-white">Hypixel Members</p>
                                     </div>
                                 </div>
@@ -328,11 +319,11 @@ array_multisort($priority, SORT_DESC, $join_date, SORT_ASC, $cached_members);
                                     <div class="card-body">
                                         <h2 class="text-white mb-0">
                                             <?php
-                                            $staff = array_filter($cached_members, function($var) {
-                                                return $var["rank"] === "Staff";
+                                            $staff = array_filter($cached, function($member) {
+                                                return $member["rank_priority"] >= 3;
                                             });
 
-                                            echo count($staff) + 1;
+                                            echo count($staff);
                                             ?>
                                         </h2>
                                         <p class="text-white">Guild Staff Members</p>
@@ -355,14 +346,14 @@ array_multisort($priority, SORT_DESC, $join_date, SORT_ASC, $cached_members);
                                                     </tr>
                                                 </thead>
                                                 <tbody>
-                                                    <?php foreach ($cached_members as $value): ?>
+                                                    <?php for ($i = 0; $i < count($cached); $i++): ?>
                                                         <tr>
-                                                        <td><img class="member-list" src="https://crafatar.com/avatars/<?php echo $value["uuid"]; ?>?size=32" /></td>
-                                                        <td><b><?php echo $value["username"]; ?></b></td>
-                                                        <td><?php echo ucfirst($value["rank"]); ?></td>
-                                                        <td><?php echo date('Y/m/d H:i:s', $value["joined_at"] / 1000); ?></td>
+                                                        <td><img class="member-list" src="https://crafatar.com/avatars/<?php echo $cached[$i]["uuid"]; ?>?size=32&overlay=1" /></td>
+                                                        <td><b><?php echo $cached[$i]["username"]; ?></b></td>
+                                                        <td><?php echo ucfirst($cached[$i]["rank"]); ?></td>
+                                                        <td><?php echo date('Y/m/d H:i:s', $cached[$i]["joined_at"] / 1000); ?></td>
                                                         </tr>
-                                                    <?php endforeach; ?>
+                                                    <?php endfor; ?>
                                                 </tbody>
                                                 <tfoot>
                                                     <tr>
